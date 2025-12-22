@@ -3,23 +3,39 @@ param()
 # Load environment variables from .env file
 $envFile = Join-Path (Split-Path -Path $PSCommandPath -Parent) ".env"
 if (Test-Path $envFile) {
-    Get-Content $envFile | Where-Object { $_ -match '^\s*[^#]' } | ForEach-Object {
-        $name, $value = $_ -split '=', 2
-        [System.Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim(), 'Process')
+    Get-Content $envFile | Where-Object { $_ -match '^\s*[^#]' -and $_ -match '=' } | ForEach-Object {
+        $line = $_.Trim()
+        if ($line) {
+            $name, $value = $line -split '=', 2
+            $name = $name.Trim()
+            $value = $value.Trim()
+            if ($name -and $value) {
+                [System.Environment]::SetEnvironmentVariable($name, $value, 'Process')
+            }
+        }
     }
 }
 
 $MeterID = [int]$env:METER_ID
-$ShipName = $env:SHIP_NAME
-$LocalApiUrl = $env:LOCAL_API_URL
-$RemoteApiUrl = $env:REMOTE_API_URL
+$ShipName = ($env:SHIP_NAME).Trim()
+$LocalApiUrlBase = ($env:LOCAL_API_URL).Trim()
+$ArchiveName = ($env:ARCHIVE_NAME).Trim()
+$LocalApiUrl = "$LocalApiUrlBase/snapshots?archive=$ArchiveName&ascending=0"
+$RemoteApiUrl = ($env:REMOTE_API_URL).Trim()
+$RemoteBatchUrl = ($env:REMOTE_API_URL_BATCH).Trim()
 $LogPath = "C:\Scripts\FlowSync.log"
-$MaxRetries = 1
+$MaxRetries = 3
 $RetryDelaySeconds = 10
 
 # Validate environment variables
-if (-not $LocalApiUrl -or -not $RemoteApiUrl) {
-    Write-Host "ERROR: Environment variables not loaded. Check .env file."
+if (-not $LocalApiUrl -or -not $RemoteApiUrl -or -not $RemoteBatchUrl -or -not $MeterID -or -not $ShipName -or -not $ArchiveName) {
+    Write-Log "ERROR: Environment variables not loaded. Check .env file."
+    Write-Log "METER_ID=$env:METER_ID"
+    Write-Log "SHIP_NAME=$env:SHIP_NAME"
+    Write-Log "LOCAL_API_URL=$env:LOCAL_API_URL"
+    Write-Log "REMOTE_API_URL=$env:REMOTE_API_URL"
+    Write-Log "REMOTE_API_URL_BATCH=$env:REMOTE_API_URL_BATCH"
+    Write-Log "ARCHIVE_NAME=$env:ARCHIVE_NAME"
     exit 1
 }
 
@@ -41,16 +57,81 @@ for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
     try {
         Write-Log "INFO: Attempt $attempt/$MaxRetries"
         Write-Log "INFO: Starting snapshot retrieval from $LocalApiUrl"
+
+
         
-        # Retrieve only the latest batch snapshots by paging until the batch number changes
+# First, fetch just the first page to determine the latest batch number
+        Write-Log "INFO: Fetching first page to determine latest batch number..."
+        $batchSize = 100
+        $firstPageUrl = "$LocalApiUrl&count=$batchSize"
+        $firstPage = Invoke-RestMethod -Uri $firstPageUrl -Method GET -TimeoutSec 30
+        
+        # Ensure $firstPage is always an array
+        if ($firstPage -is [System.Management.Automation.PSCustomObject]) {
+            $firstPage = @($firstPage)
+        }
+
+        if (-not $firstPage -or $firstPage.Count -eq 0) {
+            Write-Log "ERROR: No snapshots found in local API."
+            if ($attempt -lt $MaxRetries) { Start-Sleep -Seconds $RetryDelaySeconds }
+            else { exit 1 }
+            continue
+        }
+
+        # Get the latest batch number from the first snapshot and normalize it
+        $targetBatchRaw = $firstPage[0].snapshot.tags.'LM_RUN1!RUN1_BATCH_NR_PRV'.v
+        $targetBatch = [string]([int]([double]$targetBatchRaw))
+        Write-Log "INFO: Latest batch number detected: $targetBatchRaw (normalized: $targetBatch)"
+
+        # Check if batch already exists in remote API
+        if (-not $RemoteApiUrl -or $RemoteApiUrl.Trim().Length -eq 0) {
+            Write-Log "ERROR: RemoteApiUrl is empty, cannot perform batch check."
+            exit 1
+        }
+
+        $separator = if ($RemoteApiUrl -match "\?") { '&' } else { '?' }
+        $checkUrl = "$RemoteApiUrl$separator" + "meter_id=$MeterID&ship_name=$ShipName&batch_number=$targetBatch"
+        Write-Log "INFO: Checking if batch already exists: $checkUrl"
+        
+        try {
+            $existingBatch = Invoke-RestMethod -Uri $checkUrl -Method GET -TimeoutSec 30 -ErrorAction Stop
+
+            $existingCount = 0
+            if ($existingBatch -is [array]) {
+                $existingCount = $existingBatch.Count
+            } elseif ($existingBatch -is [System.Management.Automation.PSCustomObject]) {
+                if ($existingBatch.PSObject.Properties.Name -contains 'data' -and $existingBatch.data -is [array]) {
+                    $existingCount = $existingBatch.data.Count
+                } elseif ($existingBatch) {
+                    $existingCount = 1
+                }
+            } elseif ($existingBatch) {
+                $existingCount = 1
+            }
+            
+            if ($existingCount -gt 0) {
+                Write-Log "WARNING: Batch $targetBatch already exists in remote API (found $existingCount item(s)), skipping upload."
+                exit 0
+            }
+            Write-Log "INFO: Batch $targetBatch does not exist in remote API, proceeding with upload."
+        } catch {
+            $statusCode = $null
+            try { $statusCode = $_.Exception.Response.StatusCode.Value__ } catch { }
+            
+            if ($statusCode -eq 404) {
+                Write-Log "INFO: Batch $targetBatch not present (404), proceeding with upload."
+            } else {
+                $err = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
+                Write-Log "WARNING: Batch check failed: $err. Proceeding with upload anyway."
+            }
+        }
+
+        # Now retrieve all snapshots for this batch by paging until the batch number changes
+        Write-Log "INFO: Starting snapshot retrieval for batch $targetBatch..."
         $latestBatchSnapshots = @()
         $lastUuid = $null
-        $batchSize = 100
-        $targetBatch = $null
         $stopPaging = $false
         $pageCount = 0
-
-        Write-Log "INFO: Starting snapshot retrieval..."
 
         do {
             $url = if ($lastUuid) {
@@ -77,14 +158,10 @@ for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
 
             foreach ($snap in $page) {
                 $currentBatch = $snap.snapshot.tags.'LM_RUN1!RUN1_BATCH_NR_PRV'.v
+                $currentBatchNormalized = [string]([int]([double]$currentBatch))
 
-                if (-not $targetBatch) {
-                    $targetBatch = $currentBatch
-                    Write-Log "INFO: Latest batch number detected: $targetBatch"
-                }
-
-                if ($currentBatch -ne $targetBatch) {
-                    Write-Log "INFO: Batch number changed from $targetBatch to $currentBatch, stopping pagination."
+                if ($currentBatchNormalized -ne $targetBatch) {
+                    Write-Log "INFO: Batch number changed from $targetBatch to $currentBatchNormalized, stopping pagination."
                     $stopPaging = $true
                     break
                 }
@@ -157,12 +234,11 @@ for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
 
         $payloadJson = $payload | ConvertTo-Json -Depth 50 -Compress
         $payloadBytes = [System.Text.Encoding]::UTF8.GetBytes($payloadJson)
-        Write-Log "INFO: Sending batch payload ($($payloadBytes.Length) bytes) to $RemoteApiUrl"
+        Write-Log "INFO: Sending batch payload ($($payloadBytes.Length) bytes) to $RemoteBatchUrl"
 
         # Use 5 minute timeout for large batches
         $timeoutSeconds = 300
-        $remoteResponse = Invoke-RestMethod -Uri $RemoteApiUrl -Method POST -Body $payloadBytes -ContentType "application/json; charset=utf-8" -Headers $headers -TimeoutSec $timeoutSeconds
-
+        $remoteResponse = Invoke-RestMethod -Uri $RemoteBatchUrl -Method POST -Body $payloadBytes -ContentType "application/json; charset=utf-8" -Headers $headers -TimeoutSec $timeoutSeconds
         Write-Log "SUCCESS: Posted $($latestBatchSnapshots.Count) snapshots from batch $targetBatch in one request"
         if ($remoteResponse) {
             Write-Log "SUCCESS: Response: $($remoteResponse | ConvertTo-Json -Depth 3 -Compress)"

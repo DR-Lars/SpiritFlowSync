@@ -5,8 +5,10 @@ A script to synchronize local 'SpiritIT Flow-X' and a remote API. It's made to w
 You require some environment variables for the app to work these are:
 - METER_ID: The ID you want to identify the meter with on this ship (ex.: METER_ID=1)
 - SHIP_NAME: The name of the ship this meter is located on (ex.: SHIP_NAME=Titanic)
-- LOCAL_API_URL: The URL of the local flowmeter API, changing only the IP and archive name should be enough (ex.: LOCAL_API_URL=http://192.168.0.10/snapshots?archive=BatchLogging1&ascending=0)
-- REMOTE_API_URL: The URL of the API the data should be posted to (ex.: REMOTE_API_URL=https://flow.dash.com/api/report/batch)
+- ARCHIVE_NAME: The name of the archive where the snapshots are stored (ex.:ARCHIVE_NAME=BatchLogging1)
+- LOCAL_API_URL: The URL of the local flowmeter API, changing only the IP should be enough (ex.: LOCAL_API_URL=http://192.168.0.10)
+- REMOTE_API_URL: The URL of the API the data can be checked at with parameters meter_id, ship_name, and batch_number (ex.: REMOTE_API_URL=https://flow.dash.com/api/report)
+- REMOTE_API_URL_BATCH: The URL of the API the data should be posted to (ex.: REMOTE_API_URL=https://flow.dash.com/api/report/BATCH)
 (examples are for Flow DASH) 
 
 ## Scheduled task
