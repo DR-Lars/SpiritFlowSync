@@ -80,55 +80,72 @@ for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
 
         # Get the latest batch number from the first snapshot and normalize it
         $targetBatchRaw = $firstPage[0].snapshot.tags.'LM_RUN1!RUN1_BATCH_NR_PRV'.v
-        $targetBatch = [string]([int]([double]$targetBatchRaw))
-        Write-Log "INFO: Latest batch number detected: $targetBatchRaw (normalized: $targetBatch)"
+        $latestBatch = [string]([int]([double]$targetBatchRaw))
+        $previousBatch = [string]([int]$latestBatch - 1)
+        Write-Log "INFO: Latest batch number detected: $targetBatchRaw (normalized: $latestBatch)"
+        Write-Log "INFO: Will collect current batch $latestBatch and previous batch $previousBatch"
 
-        # Check if batch already exists in remote API
-        if (-not $RemoteApiUrl -or $RemoteApiUrl.Trim().Length -eq 0) {
-            Write-Log "ERROR: RemoteApiUrl is empty, cannot perform batch check."
-            exit 1
-        }
+        # Check which batches already exist on remote
+        $batchesToProcess = @{}
+        foreach ($batchNum in @($latestBatch, $previousBatch)) {
+            if (-not $RemoteApiUrl -or $RemoteApiUrl.Trim().Length -eq 0) {
+                Write-Log "ERROR: RemoteApiUrl is empty, cannot perform batch check."
+                exit 1
+            }
 
-        $separator = if ($RemoteApiUrl -match "\?") { '&' } else { '?' }
-        $checkUrl = "$RemoteApiUrl$separator" + "meter_id=$MeterID&ship_name=$ShipName&batch_number=$targetBatch"
-        Write-Log "INFO: Checking if batch already exists: $checkUrl"
-        
-        try {
-            $existingBatch = Invoke-RestMethod -Uri $checkUrl -Method GET -TimeoutSec 30 -ErrorAction Stop
+            $separator = if ($RemoteApiUrl -match "\?") { '&' } else { '?' }
+            $checkUrl = "$RemoteApiUrl$separator" + "meter_id=$MeterID&ship_name=$ShipName&batch_number=$batchNum"
+            Write-Log "INFO: Checking if batch $batchNum already exists: $checkUrl"
+            
+            $shouldProcess = $false
+            try {
+                $existingBatch = Invoke-RestMethod -Uri $checkUrl -Method GET -TimeoutSec 30 -ErrorAction Stop
 
-            $existingCount = 0
-            if ($existingBatch -is [array]) {
-                $existingCount = $existingBatch.Count
-            } elseif ($existingBatch -is [System.Management.Automation.PSCustomObject]) {
-                if ($existingBatch.PSObject.Properties.Name -contains 'data' -and $existingBatch.data -is [array]) {
-                    $existingCount = $existingBatch.data.Count
+                $existingCount = 0
+                if ($existingBatch -is [array]) {
+                    $existingCount = $existingBatch.Count
+                } elseif ($existingBatch -is [System.Management.Automation.PSCustomObject]) {
+                    if ($existingBatch.PSObject.Properties.Name -contains 'data' -and $existingBatch.data -is [array]) {
+                        $existingCount = $existingBatch.data.Count
+                    } elseif ($existingBatch) {
+                        $existingCount = 1
+                    }
                 } elseif ($existingBatch) {
                     $existingCount = 1
                 }
-            } elseif ($existingBatch) {
-                $existingCount = 1
+                
+                if ($existingCount -gt 0) {
+                    Write-Log "WARNING: Batch $batchNum already exists in remote API (found $existingCount item(s)), will skip."
+                } else {
+                    Write-Log "INFO: Batch $batchNum does not exist in remote API, will collect and upload."
+                    $shouldProcess = $true
+                }
+            } catch {
+                $statusCode = $null
+                try { $statusCode = $_.Exception.Response.StatusCode.Value__ } catch { }
+                
+                if ($statusCode -eq 404) {
+                    Write-Log "INFO: Batch $batchNum not present (404), will collect and upload."
+                    $shouldProcess = $true
+                } else {
+                    $err = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
+                    Write-Log "WARNING: Batch check failed: $err. Will collect and upload anyway."
+                    $shouldProcess = $true
+                }
             }
             
-            if ($existingCount -gt 0) {
-                Write-Log "WARNING: Batch $targetBatch already exists in remote API (found $existingCount item(s)), skipping upload."
-                exit 0
-            }
-            Write-Log "INFO: Batch $targetBatch does not exist in remote API, proceeding with upload."
-        } catch {
-            $statusCode = $null
-            try { $statusCode = $_.Exception.Response.StatusCode.Value__ } catch { }
-            
-            if ($statusCode -eq 404) {
-                Write-Log "INFO: Batch $targetBatch not present (404), proceeding with upload."
-            } else {
-                $err = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
-                Write-Log "WARNING: Batch check failed: $err. Proceeding with upload anyway."
+            if ($shouldProcess) {
+                $batchesToProcess[$batchNum] = @()
             }
         }
 
-        # Now retrieve all snapshots for this batch by paging until the batch number changes
-        Write-Log "INFO: Starting snapshot retrieval for batch $targetBatch..."
-        $latestBatchSnapshots = @()
+        if ($batchesToProcess.Count -eq 0) {
+            Write-Log "INFO: All batches already exist on remote, nothing to process."
+            break
+        }
+
+        # Collect snapshots for batches that need processing by paging through once
+        Write-Log "INFO: Starting snapshot collection..."
         $lastUuid = $null
         $stopPaging = $false
         $pageCount = 0
@@ -160,29 +177,40 @@ for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
                 $currentBatch = $snap.snapshot.tags.'LM_RUN1!RUN1_BATCH_NR_PRV'.v
                 $currentBatchNormalized = [string]([int]([double]$currentBatch))
 
-                if ($currentBatchNormalized -ne $targetBatch) {
-                    Write-Log "INFO: Batch number changed from $targetBatch to $currentBatchNormalized, stopping pagination."
+                # Check if we've gone past our batches of interest
+                if ([int]$currentBatchNormalized -lt [int]$previousBatch) {
+                    Write-Log "INFO: Reached batch $currentBatchNormalized which is before our target batches, stopping pagination."
                     $stopPaging = $true
                     break
                 }
 
-                $latestBatchSnapshots += $snap
+                # Add to appropriate batch collection if we're tracking it
+                if ($batchesToProcess.ContainsKey($currentBatchNormalized)) {
+                    $batchesToProcess[$currentBatchNormalized] += $snap
+                }
             }
 
             if ($stopPaging) {
-                Write-Log "INFO: Stopping pagination due to batch change."
+                Write-Log "INFO: Stopping pagination."
                 break
             }
 
             $lastUuid = $page[-1].uuid
-            Write-Log "INFO: Last UUID: $lastUuid, Total snapshots so far: $($latestBatchSnapshots.Count)"
             
         } while (-not $stopPaging -and $page.Count -eq $batchSize)
 
+        # Process and send each batch
+        foreach ($targetBatch in @($latestBatch, $previousBatch)) {
+            if (-not $batchesToProcess.ContainsKey($targetBatch)) {
+                Write-Log "INFO: Batch $targetBatch already exists on remote, skipping."
+                continue
+            }
+
+            $latestBatchSnapshots = $batchesToProcess[$targetBatch]
+            Write-Log "INFO: ===== Processing batch $targetBatch ====="
+
         if (-not $latestBatchSnapshots -or $latestBatchSnapshots.Count -eq 0) {
-            Write-Log "ERROR: No snapshots found for the latest batch."
-            if ($attempt -lt $MaxRetries) { Start-Sleep -Seconds $RetryDelaySeconds }
-            else { exit 1 }
+            Write-Log "WARNING: No snapshots found for batch $targetBatch, skipping."
             continue
         }
 
@@ -215,8 +243,8 @@ for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
         }
 
         if (-not $filteredSnapshots -or $filteredSnapshots.Count -eq 0) {
-            Write-Log "ERROR: No snapshots with valid timestamp to send."
-            exit 1
+            Write-Log "ERROR: No snapshots with valid timestamp to send for batch $targetBatch."
+            continue
         }
 
         # Debug: verify endpoint and sample timestamps
@@ -243,7 +271,7 @@ for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
         if ($remoteResponse) {
             Write-Log "SUCCESS: Response: $($remoteResponse | ConvertTo-Json -Depth 3 -Compress)"
         }
-        break
+        }
     } catch {
         $errorDetails = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
         Write-Log "ERROR (attempt $attempt): $errorDetails"
