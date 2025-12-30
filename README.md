@@ -1,6 +1,9 @@
 # Spirit FlowSync
 A script to synchronize local 'SpiritIT Flow-X' and a remote API. It's made to work with [Flow DASH](https://github.com/DR-Lars/Flow-DASH), but you can set up your own API if you desire.
 
+### FlowSync-Test.ps1
+A script to quickly test the local and remote api.
+
 ## Environment variables
 You require some environment variables for the app to work these are:
 - METER_ID: The ID you want to identify the meter with on this ship (ex.: METER_ID=1)
@@ -12,7 +15,7 @@ You require some environment variables for the app to work these are:
 (examples are for Flow DASH) 
 
 ## Scheduled task
-I recommend setting up a scheduled task on a loacl Windows computer that is almost always on.
+I recommend setting up a scheduled task on a local Windows computer that is almost always on.
 1. Open Task Scheduler → Create Task:
 2. Triggers: “Daily” + “Repeat task every: 1 hour”
 3. Actions: powershell.exe -ExecutionPolicy Bypass -File "C:\Scripts\Sync-LocalToRemote.ps1"
