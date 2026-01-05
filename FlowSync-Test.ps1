@@ -47,6 +47,7 @@ function Write-Log($msg) {
 
 $headers = @{
     "Content-Type" = "application/json"
+    "Authorization" = "Bearer $env:REMOTE_API_TOKEN"
 }
 
 try {

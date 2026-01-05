@@ -13,6 +13,7 @@ You require some environment variables for the app to work these are:
 - REMOTE_API_URL: The URL of the API the data can be checked at with parameters meter_id, ship_name, and batch_number (ex.: REMOTE_API_URL=https://flow.dash.com/api/report)
 - REMOTE_API_URL_BATCH: The URL of the API the data should be posted to (ex.: REMOTE_API_URL=https://flow.dash.com/api/report/BATCH)
 (examples are for Flow DASH) 
+- REMOTE_API_TOKEN: Bearer token to authorise API access (ex.: REMOTE_API_TOKEN=Access123!)
 
 ## Scheduled task
 I recommend setting up a scheduled task on a local Windows computer that is almost always on.
