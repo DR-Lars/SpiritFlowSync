@@ -23,12 +23,13 @@ $ArchiveName = ($env:ARCHIVE_NAME).Trim()
 $LocalApiUrl = "$LocalApiUrlBase/snapshots?archive=$ArchiveName&ascending=0"
 $RemoteApiUrl = ($env:REMOTE_API_URL).Trim()
 $RemoteBatchUrl = ($env:REMOTE_API_URL_BATCH).Trim()
+$RemoteApiToken = ($env:REMOTE_API_TOKEN).Trim()
 $LogPath = "C:\Scripts\FlowSync.log"
 $MaxRetries = 3
 $RetryDelaySeconds = 10
 
 # Validate environment variables
-if (-not $LocalApiUrl -or -not $RemoteApiUrl -or -not $RemoteBatchUrl -or -not $MeterID -or -not $ShipName -or -not $ArchiveName) {
+if (-not $LocalApiUrl -or -not $RemoteApiUrl -or -not $RemoteBatchUrl -or -not $MeterID -or -not $ShipName -or -not $ArchiveName -or -not $RemoteApiToken) {
     Write-Log "ERROR: Environment variables not loaded. Check .env file."
     Write-Log "METER_ID=$env:METER_ID"
     Write-Log "SHIP_NAME=$env:SHIP_NAME"
@@ -36,6 +37,7 @@ if (-not $LocalApiUrl -or -not $RemoteApiUrl -or -not $RemoteBatchUrl -or -not $
     Write-Log "REMOTE_API_URL=$env:REMOTE_API_URL"
     Write-Log "REMOTE_API_URL_BATCH=$env:REMOTE_API_URL_BATCH"
     Write-Log "ARCHIVE_NAME=$env:ARCHIVE_NAME"
+    Write-Log "REMOTE_API_TOKEN=$env:REMOTE_API_TOKEN"
     exit 1
 }
 
@@ -48,9 +50,13 @@ function Write-Log($msg) {
     "$timestamp `t $msg" | Out-File -FilePath $LogPath -Append -Encoding utf8
 }
 
-$headers = @{
+$localHeaders = @{
     "Content-Type" = "application/json"
-    "Authorization" = "Bearer $env:REMOTE_API_TOKEN"
+}
+
+$remoteHeaders = @{
+    "Content-Type" = "application/json"
+    "Authorization" = "Bearer $RemoteApiToken"
 }
 
 for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
@@ -64,7 +70,7 @@ for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
         Write-Log "INFO: Fetching first page to determine latest batch number..."
         $batchSize = 100
         $firstPageUrl = "$LocalApiUrl&count=$batchSize"
-        $firstPage = Invoke-RestMethod -Uri $firstPageUrl -Method GET -TimeoutSec 30
+        $firstPage = Invoke-RestMethod -Uri $firstPageUrl -Method GET -TimeoutSec 30 -Headers $localHeaders
         
         # Ensure $firstPage is always an array
         if ($firstPage -is [System.Management.Automation.PSCustomObject]) {
@@ -105,7 +111,7 @@ for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
             }
 
             Write-Log "INFO: Fetching page $($pageCount + 1) with URL: $url"
-            $page = Invoke-RestMethod -Uri $url -Method GET -TimeoutSec 30
+            $page = Invoke-RestMethod -Uri $url -Method GET -TimeoutSec 30 -Headers $localHeaders
             $pageCount++
 
             # Ensure $page is always an array
@@ -171,7 +177,7 @@ for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
             
             $shouldSkip = $false
             try {
-                $existingBatch = Invoke-RestMethod -Uri $checkUrl -Method GET -TimeoutSec 30 -ErrorAction Stop
+                $existingBatch = Invoke-RestMethod -Uri $checkUrl -Method GET -TimeoutSec 30 -ErrorAction Stop -Headers $remoteHeaders
 
                 $remoteCount = 0
                 if ($existingBatch -is [array]) {
@@ -264,7 +270,7 @@ for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
 
         # Use 5 minute timeout for large batches
         $timeoutSeconds = 300
-        $remoteResponse = Invoke-RestMethod -Uri $RemoteBatchUrl -Method POST -Body $payloadBytes -ContentType "application/json; charset=utf-8" -Headers $headers -TimeoutSec $timeoutSeconds
+        $remoteResponse = Invoke-RestMethod -Uri $RemoteBatchUrl -Method POST -Body $payloadBytes -ContentType "application/json; charset=utf-8" -Headers $remoteHeaders -TimeoutSec $timeoutSeconds
         Write-Log "SUCCESS: Posted $($latestBatchSnapshots.Count) snapshots from batch $targetBatch in one request"
         if ($remoteResponse) {
             Write-Log "SUCCESS: Response: $($remoteResponse | ConvertTo-Json -Depth 3 -Compress)"

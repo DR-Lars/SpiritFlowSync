@@ -22,16 +22,18 @@ $LocalApiUrlBase = ($env:LOCAL_API_URL).Trim()
 $ArchiveName = ($env:ARCHIVE_NAME).Trim()
 $LocalApiUrl = "$LocalApiUrlBase/snapshots?archive=$ArchiveName&ascending=0"
 $RemoteBatchUrl = ($env:REMOTE_API_URL_BATCH).Trim()
+$RemoteApiToken = ($env:REMOTE_API_TOKEN).Trim()
 $LogPath = "C:\Scripts\FlowSync-Test.log"
 
 # Validate environment variables
-if (-not $LocalApiUrl -or -not $RemoteBatchUrl -or -not $MeterID -or -not $ShipName -or -not $ArchiveName) {
+if (-not $LocalApiUrl -or -not $RemoteBatchUrl -or -not $MeterID -or -not $ShipName -or -not $ArchiveName -or -not $RemoteApiToken) {
     Write-Host "ERROR: Environment variables not loaded. Check .env file."
     Write-Host "METER_ID=$env:METER_ID"
     Write-Host "SHIP_NAME=$env:SHIP_NAME"
     Write-Host "LOCAL_API_URL=$env:LOCAL_API_URL"
     Write-Host "REMOTE_API_URL_BATCH=$env:REMOTE_API_URL_BATCH"
     Write-Host "ARCHIVE_NAME=$env:ARCHIVE_NAME"
+    Write-Host "REMOTE_API_TOKEN=$env:REMOTE_API_TOKEN"
     exit 1
 }
 
@@ -47,7 +49,7 @@ function Write-Log($msg) {
 
 $headers = @{
     "Content-Type" = "application/json"
-    "Authorization" = "Bearer $env:REMOTE_API_TOKEN"
+    "Authorization" = "Bearer $RemoteApiToken"
 }
 
 try {
@@ -58,7 +60,7 @@ try {
     $url = "$LocalApiUrl&count=$batchSize"
     Write-Log "INFO: Fetching snapshots from: $url"
     
-    $snapshots = Invoke-RestMethod -Uri $url -Method GET -TimeoutSec 30
+    $snapshots = Invoke-RestMethod -Uri $url -Method GET -TimeoutSec 30 -Headers @{"Content-Type" = "application/json"}
     
     # Ensure snapshots is always an array
     if ($snapshots -is [System.Management.Automation.PSCustomObject]) {
