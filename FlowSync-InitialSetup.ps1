@@ -16,7 +16,7 @@ if (Test-Path $envFile) {
     }
 }
 
-$MeterID = [int]$env:METER_ID
+$MeterID = ($env:METER_ID).Trim()
 $ShipName = ($env:SHIP_NAME).Trim()
 $LocalApiUrlBase = ($env:LOCAL_API_URL).Trim()
 $ArchiveName = ($env:ARCHIVE_NAME).Trim()
@@ -54,10 +54,6 @@ function Write-Log($msg) {
 $headers = @{
     "Content-Type" = "application/json"
     "Authorization" = "Bearer $RemoteApiToken"
-}
-
-$localHeaders = @{
-    "Content-Type" = "application/json"
 }
 
 Write-Log "========================================"
@@ -218,7 +214,6 @@ try {
         }
         
         # Send batch with retry logic
-        $uploaded = $false
         for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
             try {
                 $payload = @{

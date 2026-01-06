@@ -16,7 +16,7 @@ if (Test-Path $envFile) {
     }
 }
 
-$MeterID = [int]$env:METER_ID
+$MeterID = ($env:METER_ID).Trim()
 $ShipName = ($env:SHIP_NAME).Trim()
 $LocalApiUrlBase = ($env:LOCAL_API_URL).Trim()
 $ArchiveName = ($env:ARCHIVE_NAME).Trim()
