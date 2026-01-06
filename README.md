@@ -4,6 +4,9 @@ A script to synchronize local 'SpiritIT Flow-X' and a remote API. It's made to w
 ### FlowSync-Test.ps1
 A script to quickly test the local and remote api.
 
+### FlowSync-InitialSetup.ps1
+A script to run initially that returns all batches from the local API to the remote.
+
 ## Environment variables
 You require some environment variables for the app to work these are:
 - METER_ID: The ID you want to identify the meter with on this ship (ex.: METER_ID=1)
